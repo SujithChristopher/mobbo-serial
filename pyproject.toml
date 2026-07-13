@@ -1,13 +1,36 @@
 [project]
 name = "mobbo-serial"
 version = "0.1.0"
-description = "Add your description here"
+description = "Serial COP (center of pressure) library for two-force-board setups - connect, tare, and record sessions to CSV, no GUI required."
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+authors = [
+    { name = "Sujith Christopher", email = "chrisbon95@gmail.com" },
+]
+keywords = ["serial", "force-plate", "center-of-pressure", "cop", "biomechanics"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+]
 dependencies = [
     "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+gui = [
     "pyside6>=6.11.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/SujithChristopher/mobbo-serial"
+Repository = "https://github.com/SujithChristopher/mobbo-serial"
+Issues = "https://github.com/SujithChristopher/mobbo-serial/issues"
 
 [dependency-groups]
 dev = [

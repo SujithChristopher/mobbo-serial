@@ -7,7 +7,15 @@ COP samples, tare, and record sessions to CSV.
 ## Install
 
 ```bash
-uv add mobbo-serial
+pip install mobbo-serial
+# or: uv add mobbo-serial
+```
+
+`sample_gui.py` (a PySide6 demo app built on this library) needs the optional
+`gui` extra:
+
+```bash
+pip install mobbo-serial[gui]
 ```
 
 ## Usage
@@ -38,6 +46,14 @@ board.disconnect()
 ## Development
 
 ```bash
-uv sync
+uv sync --extra gui  # --extra gui only needed to run sample_gui.py
 uv run pytest -v
 ```
+
+## Releasing
+
+Publishing to PyPI is automated: bump `version` in `pyproject.toml`, commit,
+tag it (`git tag vX.Y.Z && git push origin vX.Y.Z`), then publish a
+[GitHub Release](https://github.com/SujithChristopher/mobbo-serial/releases)
+for that tag - the `publish.yml` workflow builds and uploads it via PyPI
+Trusted Publishing.
