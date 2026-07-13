@@ -42,7 +42,7 @@ def test_connect_starts_reader_thread_and_updates_latest(monkeypatch):
         assert _wait_until(lambda: b.latest is not None)
         assert b.status == "connected"
         assert b.latest.pulse == 7
-        assert b.latest.forces == [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+        assert b.latest.forces == [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
     finally:
         b.disconnect()
 
