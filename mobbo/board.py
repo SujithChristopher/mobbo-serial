@@ -220,8 +220,8 @@ class Board:
         forces = enriched.forces
         self._record_writer.writerow({
             "time_ms": enriched.time_ms,
-            "F1": forces[0], "F2": forces[1], "F3": forces[2], "F4": forces[3],
-            "F5": forces[4], "F6": forces[5], "F7": forces[6], "F8": forces[7],
+            "f1": forces[0], "f2": forces[1], "f3": forces[2], "f4": forces[3],
+            "f5": forces[4], "f6": forces[5], "f7": forces[6], "f8": forces[7],
             "pulse": enriched.pulse,
             "layout": enriched.layout,
             "board1_cop_x": enriched.cop1.cop_x,

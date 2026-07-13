@@ -6,7 +6,7 @@ from typing import TextIO
 from . import config
 
 CSV_FIELDNAMES = [
-    "time_ms", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "pulse",
+    "time_ms", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "pulse",
     "layout",
     "board1_cop_x", "board1_cop_y", "board1_weight", "board1_valid",
     "board2_cop_x", "board2_cop_y", "board2_weight", "board2_valid",
