@@ -18,7 +18,7 @@ import time
 import mobbo
 from mobbo.constants import BOARD_LENGTH_CM, BOARD_WIDTH_CM, LAYOUT_FRONT_BACK, LAYOUT_SIDE_BY_SIDE, WEIGHT_THRESHOLD_KG
 from mobbo.cop import board_labels, board_offsets
-from PySide6.QtCore import QObject, Qt, QRectF, QTimer, Signal
+from PySide6.QtCore import QObject, QSize, Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -37,7 +38,9 @@ from PySide6.QtWidgets import (
 
 
 DEFAULT_PORT = "COM10"
-PX_PER_CM = 6.0  # fixed scale - boards render the same physical size in both configs
+DEFAULT_PX_PER_CM = 6.0  # only used to size the canvas's initial sizeHint - actual
+                         # painting scale is computed per-resize so the board fills
+                         # whatever space the window (e.g. maximized/fullscreen) gives it
 CANVAS_MARGIN = 30
 UI_REFRESH_MS = 33
 LAYOUT_OPTIONS = {
@@ -92,16 +95,19 @@ class CombinedBoardCanvas(QWidget):
         self.cop2 = mobbo.BoardCop(0.0, 0.0, 0.0, False)
         self.combined = mobbo.BoardCop(0.0, 0.0, 0.0, False)
         self.setStyleSheet(f"background-color: {COLOR_PANEL};")
-        self._apply_fixed_size()
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(360, 260)
 
-    def _apply_fixed_size(self):
+    def sizeHint(self):
         # Same bounding box for BOTH configs so the board never changes
-        # rendered size when you switch layouts.
+        # rendered size when you switch layouts. Only used to size the
+        # window on first show - paintEvent computes the real scale from
+        # whatever size the widget actually ends up with.
         world_w = BOARD_WIDTH_CM + BOARD_WIDTH_CM
         world_h = BOARD_LENGTH_CM * 2
-        px_w = int(world_w * PX_PER_CM) + 2 * CANVAS_MARGIN
-        px_h = int(world_h * PX_PER_CM) + 2 * CANVAS_MARGIN + 30  # +30 for header text
-        self.setFixedSize(px_w, px_h)
+        px_w = int(world_w * DEFAULT_PX_PER_CM) + 2 * CANVAS_MARGIN
+        px_h = int(world_h * DEFAULT_PX_PER_CM) + 2 * CANVAS_MARGIN + 30  # +30 for header text
+        return QSize(px_w, px_h)
 
     def set_layout_key(self, layout_key: str):
         self.layout_key = layout_key
@@ -141,12 +147,22 @@ class CombinedBoardCanvas(QWidget):
         min_y, max_y = min(ys), max(ys)
         world_cx = (min_x + max_x) / 2.0
         world_cy = (min_y + max_y) / 2.0
+        world_w = max_x - min_x
+        world_h = max_y - min_y
+
+        # Fill whatever space this widget actually has (fixed size before,
+        # now resizable) while preserving the boards' real-world aspect
+        # ratio - "contain" scaling, so fullscreen/maximized windows make
+        # the board bigger instead of leaving it pinned at a fixed pixel size.
+        draw_w = max(self.width() - 2 * CANVAS_MARGIN, 10)
+        draw_h = max(self.height() - header_h - 2 * CANVAS_MARGIN, 10)
+        px_per_cm = min(draw_w / world_w, draw_h / world_h)
 
         cx_px = self.width() / 2.0
         cy_px = header_h + (self.height() - header_h) / 2.0
 
         def to_px(x, y):
-            return (cx_px + (x - world_cx) * PX_PER_CM, cy_px - (y - world_cy) * PX_PER_CM)
+            return (cx_px + (x - world_cx) * px_per_cm, cy_px - (y - world_cy) * px_per_cm)
 
         def draw_board(offset, force_labels, cop):
             bx, by = offset
@@ -293,6 +309,10 @@ class StatTile(QWidget):
         label.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 10pt; background: transparent;")
         self.value_label = QLabel("--")
         self.value_label.setStyleSheet(f"color: {COLOR_TITLE}; font-size: 12pt; font-weight: 700; background: transparent;")
+        # Reserve width up front so digit-count changes ("0.0 s" -> "123.4 s",
+        # "0" -> "255") don't reflow this tile's neighbors in status_row -
+        # that reflow was part of what read as "jitter" at high update rates.
+        self.value_label.setMinimumWidth(90)
         layout.addWidget(label)
         layout.addWidget(self.value_label)
 
@@ -401,6 +421,7 @@ class MonitorScreen(QWidget):
         self.signals.tare_done.connect(self._on_tare_done)
 
         self.latest_sample: mobbo.EnrichedSample | None = None
+        self._pending_sample: mobbo.EnrichedSample | None = None
         self.recording = False
         self.record_start_time = None
 
@@ -424,7 +445,6 @@ class MonitorScreen(QWidget):
         # --- Left: board display, centered content, config picker above ----
         left = QVBoxLayout()
         left.setSpacing(14)
-        left.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
         title = QLabel("Two Board COP Monitor")
         title.setStyleSheet(f"color: {COLOR_TITLE}; font-size: 20pt; font-weight: 700; background: transparent;")
@@ -444,10 +464,9 @@ class MonitorScreen(QWidget):
         left.addLayout(config_row)
 
         self.combined_canvas = CombinedBoardCanvas()
-        left.addWidget(self.combined_canvas, alignment=Qt.AlignLeft | Qt.AlignTop)
+        left.addWidget(self.combined_canvas, 1)
 
-        left.addStretch(1)
-        outer.addLayout(left, 0)
+        outer.addLayout(left, 1)
 
         divider = QFrame()
         divider.setFrameShape(QFrame.VLine)
@@ -518,7 +537,6 @@ class MonitorScreen(QWidget):
 
         right.addStretch(1)
         outer.addLayout(right, 0)
-        outer.addStretch(1)
 
         self.on_config_changed(self.config_combo.currentText())
         self.refresh_ports()
@@ -636,6 +654,18 @@ class MonitorScreen(QWidget):
         self.disconnect()
 
     def _tick_timer(self):
+        # Samples can arrive from the board far faster than a screen can
+        # usefully redraw (or a human can read numbers) - _on_sample only
+        # stashes the latest one, and this timer (running at UI_REFRESH_MS,
+        # ~30fps) is what actually pushes it into the widgets. Repainting
+        # on every single incoming sample was the cause of the visible
+        # jitter/flicker at high data rates.
+        if self._pending_sample is not None:
+            sample = self._pending_sample
+            self._pending_sample = None
+            label1, label2 = board_labels(sample.layout)
+            self._update_display(sample, label1, label2)
+
         if self.recording and self.record_start_time is not None:
             elapsed = time.monotonic() - self.record_start_time
             self.timer_tile.set_value(f"{elapsed:.1f} s")
@@ -644,8 +674,7 @@ class MonitorScreen(QWidget):
 
     def _on_sample(self, sample: mobbo.EnrichedSample):
         self.latest_sample = sample
-        label1, label2 = board_labels(sample.layout)
-        self._update_display(sample, label1, label2)
+        self._pending_sample = sample
 
     def _update_display(self, sample: mobbo.EnrichedSample, label1: str, label2: str):
         self.combined_canvas.set_data(sample.cop1, sample.cop2, sample.combined)
