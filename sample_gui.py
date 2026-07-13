@@ -1,58 +1,49 @@
 #!/usr/bin/env python3
 """PySide6 UI for live two-board force platform COP display.
 
+Demo/example app for the `mobbo` library - all serial I/O, packet
+parsing, COP math, tare, and session recording live in `mobbo.Board`.
+This file only owns the Qt widgets and wires them to the library.
+
 Two screens:
-  1) LoginScreen  - enter subject name/number, creates a dated session folder
+  1) LoginScreen  - enter subject name/number
   2) MonitorScreen - live combined-board COP view + right-side control panel
-     with Save CSV / Record / Tare controls, fully dark-themed.
+     with Record / Tare controls, fully dark-themed.
 """
 
-import csv
-import multiprocessing
-import os
-import platform
-import queue
-import struct
 import sys
+import threading
 import time
-from dataclasses import dataclass
-from datetime import datetime
 
-import serial
-import serial.tools.list_ports
-from PySide6.QtCore import Qt, QTimer, QRectF, Signal
-from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont
+import mobbo
+from mobbo.constants import BOARD_LENGTH_CM, BOARD_WIDTH_CM, LAYOUT_FRONT_BACK, LAYOUT_SIDE_BY_SIDE, WEIGHT_THRESHOLD_KG
+from mobbo.cop import board_labels, board_offsets
+from PySide6.QtCore import QObject, Qt, QRectF, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
-    QWidget,
-    QMainWindow,
-    QStackedWidget,
-    QVBoxLayout,
+    QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
-    QComboBox,
+    QMainWindow,
     QMessageBox,
-    QFrame,
+    QPushButton,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 
-BAUD_RATE = 921600
 DEFAULT_PORT = "COM10"
-HEADER_BYTES = (0xFF, 0xFF)
-PAYLOAD_FLOATS = 10
-PAYLOAD_SIZE = PAYLOAD_FLOATS * 4
-BOARD_WIDTH_CM = 57.5
-BOARD_LENGTH_CM = 42.5
 PX_PER_CM = 6.0  # fixed scale - boards render the same physical size in both configs
 CANVAS_MARGIN = 30
 UI_REFRESH_MS = 33
-CONNECT_TIMEOUT_S = 4.0
-WEIGHT_THRESHOLD_KG = 2.0  # combined COP is only computed/plotted above this
-CONFIG_SIDE_BY_SIDE = "1 x 2 - Board 1 right foot"
-CONFIG_FRONT_BACK = "2 x 1 - Board 1 front"
-TARE_SAMPLE_COUNT = 100  # samples averaged per channel to compute the tare (zero) offset
+LAYOUT_OPTIONS = {
+    "1 x 2 - Board 1 right foot": LAYOUT_SIDE_BY_SIDE,
+    "2 x 1 - Board 1 front": LAYOUT_FRONT_BACK,
+}
 
 # --- Dark theme ------------------------------------------------------------
 COLOR_BG = "#0b0e14"          # window / outer background
@@ -71,162 +62,16 @@ COLOR_LCOP = "#f97316"   # local (per-board) COP - high-contrast orange against 
 COLOR_GCOP = "#0ea5e9"   # global/combined COP - high-contrast cyan-blue, clearly distinct from LCOP
 
 
-def get_base_sessions_dir() -> str:
-    """Base folder for session data. Fixed to C: drive on Windows so a
-    frozen .exe behaves the same no matter which machine or folder it's
-    launched from. Falls back to the user's home directory on non-Windows
-    systems (only relevant for development/testing)."""
-    if platform.system() == "Windows":
-        return "C:/LCOP_Sessions"
-    return os.path.join(os.path.expanduser("~"), "LCOP_Sessions")
+# ---------------------------------------------------------------------------
+# mobbo.Board bridge - Board's callbacks fire on its background reader
+# thread; Qt widgets may only be touched from the GUI thread, so callbacks
+# just emit a signal and the actual widget updates happen in slots below.
+# ---------------------------------------------------------------------------
 
-
-@dataclass
-class Sample:
-    time_ms: float
-    forces: list[float]
-    pulse: int
-
-
-@dataclass
-class BoardCop:
-    cop_x: float
-    cop_y: float
-    total_force: float
-    valid: bool
-
-
-def pop_binary_payload(buffer: bytearray) -> bytes | None:
-    while len(buffer) >= 4:
-        if buffer[0] != HEADER_BYTES[0] or buffer[1] != HEADER_BYTES[1]:
-            del buffer[0]
-            continue
-
-        packet_len = buffer[2]
-        payload_len = packet_len - 1
-        total_len = 3 + packet_len
-        if payload_len <= 0:
-            del buffer[0]
-            continue
-        if len(buffer) < total_len:
-            return None
-
-        payload = bytes(buffer[3:3 + payload_len])
-        checksum = buffer[3 + payload_len]
-        calc = (0xFE + packet_len + sum(payload)) & 0xFF
-        if checksum != calc:
-            del buffer[0]
-            continue
-
-        del buffer[:total_len]
-        return payload
-    return None
-
-
-def parse_payload(payload: bytes) -> Sample | None:
-    if len(payload) != PAYLOAD_SIZE:
-        return None
-    try:
-        values = struct.unpack("<10f", payload)
-    except struct.error:
-        return None
-    return Sample(values[0], list(values[1:9]), int(round(values[9])))
-
-
-def compute_board_cop(forces: list[float], start_index: int) -> BoardCop:
-    f1, f2, f3, f4 = forces[start_index:start_index + 4]
-    total = f1 + f2 + f3 + f4
-    if abs(total) < 1e-6:
-        return BoardCop(0.0, 0.0, total, False)
-
-    cop_x = (((f1 + f4) - (f2 + f3)) / total) * (BOARD_WIDTH_CM / 2.0)
-    cop_y = (((f1 + f2) - (f3 + f4)) / total) * (BOARD_LENGTH_CM / 2.0)
-    return BoardCop(cop_x, cop_y, total, True)
-
-
-def board_offsets(config_text: str):
-    """Board 1's center is always the origin (0, 0). Board 2 sits directly
-    adjacent to it, in real board dimensions, per the selected layout.
-
-    NOTE: Board 2's offset direction (negative X or Y) is an assumption -
-    flip the sign in here if it's mirrored for your actual physical setup.
-    """
-    if config_text == CONFIG_FRONT_BACK:
-        return (0.0, 0.0), (0.0, -BOARD_LENGTH_CM)
-    return (0.0, 0.0), (-BOARD_WIDTH_CM, 0.0)
-
-
-def board_labels(config_text: str):
-    if config_text == CONFIG_FRONT_BACK:
-        return "Front", "Back"
-    return "Right foot", "Left foot"
-
-
-def compute_combined_cop(cop1: BoardCop, cop2: BoardCop, offset1, offset2) -> BoardCop:
-    """Combine both boards' COPs into one global COP, in Board 1's frame.
-    Below WEIGHT_THRESHOLD_KG combined weight, the COP is not considered
-    reliable and is reported as (0, 0) / invalid (not plotted)."""
-    total_weight = cop1.total_force + cop2.total_force
-    if total_weight <= WEIGHT_THRESHOLD_KG:
-        return BoardCop(0.0, 0.0, total_weight, False)
-
-    gx1 = offset1[0] + cop1.cop_x
-    gy1 = offset1[1] + cop1.cop_y
-    gx2 = offset2[0] + cop2.cop_x
-    gy2 = offset2[1] + cop2.cop_y
-    cop_x = (cop1.total_force * gx1 + cop2.total_force * gx2) / total_weight
-    cop_y = (cop1.total_force * gy1 + cop2.total_force * gy2) / total_weight
-    return BoardCop(cop_x, cop_y, total_weight, True)
-
-
-def serial_worker(port: str, baud: int, out_queue, cmd_queue, stop_event):
-    """Runs in its own OS process (not a thread) so a stuck blocking call
-    (e.g. serial.Serial() hanging on Windows) can be killed outright with
-    .terminate() instead of freezing the whole app."""
-    rx_buffer = bytearray()
-    ser = None
-    try:
-        ser = serial.Serial(port, baud, timeout=0, write_timeout=0)
-        out_queue.put(("connected", port))
-        try:
-            ser.reset_input_buffer()
-            ser.write(b"0")
-            ser.flush()
-            ser.reset_input_buffer()
-        except serial.SerialTimeoutException:
-            pass
-
-        while not stop_event.is_set():
-            try:
-                while True:
-                    cmd = cmd_queue.get_nowait()
-                    ser.write(cmd)
-                    ser.flush()
-            except queue.Empty:
-                pass
-
-            chunk = ser.read(ser.in_waiting or 1)
-            if chunk:
-                rx_buffer.extend(chunk)
-
-            while True:
-                payload = pop_binary_payload(rx_buffer)
-                if payload is None:
-                    break
-                sample = parse_payload(payload)
-                if sample is not None:
-                    out_queue.put(("sample", sample))
-
-            time.sleep(0.001)
-    except Exception as exc:
-        out_queue.put(("error", str(exc)))
-    finally:
-        if ser is not None:
-            try:
-                ser.close()
-            except Exception:
-                pass
-        out_queue.put(("disconnected", None))
+class BoardSignals(QObject):
+    sample_received = Signal(object)  # mobbo.EnrichedSample
+    error_occurred = Signal(str)
+    tare_done = Signal()
 
 
 # ---------------------------------------------------------------------------
@@ -242,10 +87,10 @@ class CombinedBoardCanvas(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.config_text = CONFIG_SIDE_BY_SIDE
-        self.cop1 = BoardCop(0.0, 0.0, 0.0, False)
-        self.cop2 = BoardCop(0.0, 0.0, 0.0, False)
-        self.combined = BoardCop(0.0, 0.0, 0.0, False)
+        self.layout_key = LAYOUT_SIDE_BY_SIDE
+        self.cop1 = mobbo.BoardCop(0.0, 0.0, 0.0, False)
+        self.cop2 = mobbo.BoardCop(0.0, 0.0, 0.0, False)
+        self.combined = mobbo.BoardCop(0.0, 0.0, 0.0, False)
         self.setStyleSheet(f"background-color: {COLOR_PANEL};")
         self._apply_fixed_size()
 
@@ -258,11 +103,11 @@ class CombinedBoardCanvas(QWidget):
         px_h = int(world_h * PX_PER_CM) + 2 * CANVAS_MARGIN + 30  # +30 for header text
         self.setFixedSize(px_w, px_h)
 
-    def set_config(self, config_text: str):
-        self.config_text = config_text
+    def set_layout_key(self, layout_key: str):
+        self.layout_key = layout_key
         self.update()
 
-    def set_data(self, cop1: BoardCop, cop2: BoardCop, combined: BoardCop):
+    def set_data(self, cop1: mobbo.BoardCop, cop2: mobbo.BoardCop, combined: mobbo.BoardCop):
         self.cop1 = cop1
         self.cop2 = cop2
         self.combined = combined
@@ -284,7 +129,7 @@ class CombinedBoardCanvas(QWidget):
             f"W1: {w1:.2f} kg     W2: {w2:.2f} kg     Total: {total:.2f} kg",
         )
 
-        offset1, offset2 = board_offsets(self.config_text)
+        offset1, offset2 = board_offsets(self.layout_key)
         half_w = BOARD_WIDTH_CM / 2.0
         half_l = BOARD_LENGTH_CM / 2.0
 
@@ -481,7 +326,7 @@ def _make_button(text: str, primary: bool = False) -> QPushButton:
 # ---------------------------------------------------------------------------
 
 class LoginScreen(QWidget):
-    session_started = Signal(str, str)  # subject_id, session_dir
+    session_started = Signal(str)  # subject_id
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -534,19 +379,8 @@ class LoginScreen(QWidget):
         if not subject_id:
             self.error_label.setText("Enter a subject name or number first.")
             return
-        safe_id = "".join(c for c in subject_id if c.isalnum() or c in ("-", "_")) or "subject"
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_dir = get_base_sessions_dir()
-        session_dir = os.path.join(base_dir, f"{safe_id}_{timestamp}")
-        try:
-            os.makedirs(session_dir, exist_ok=True)
-        except OSError as exc:
-            self.error_label.setText(f"Could not create session folder: {exc}")
-            return
-
         self.error_label.setText("")
-        self.session_started.emit(subject_id, session_dir)
+        self.session_started.emit(subject_id)
 
 
 # ---------------------------------------------------------------------------
@@ -560,32 +394,25 @@ class MonitorScreen(QWidget):
         self.setStyleSheet(f"background-color: {COLOR_BG};")
 
         self.subject_id = ""
-        self.session_dir = ""
-        self.sample_queue = multiprocessing.Queue()
-        self.command_queue = None
-        self.stop_event = None
-        self.reader = None
-        self.connected = False
-        self.connect_attempt_time = None
-        self.latest_sample = None
+        self.board: mobbo.Board | None = None
+        self.signals = BoardSignals()
+        self.signals.sample_received.connect(self._on_sample)
+        self.signals.error_occurred.connect(self._on_error)
+        self.signals.tare_done.connect(self._on_tare_done)
+
+        self.latest_sample: mobbo.EnrichedSample | None = None
         self.recording = False
         self.record_start_time = None
-        self.record_buffer = []
-        self.tare_offsets = [0.0] * 8
-        self.taring_active = False
-        self.tare_buffer = []
 
         self.build_ui()
 
         self.poll_timer = QTimer(self)
-        self.poll_timer.timeout.connect(self.process_queue)
+        self.poll_timer.timeout.connect(self._tick_timer)
         self.poll_timer.start(UI_REFRESH_MS)
 
-    def set_session(self, subject_id: str, session_dir: str):
+    def set_session(self, subject_id: str):
         self.subject_id = subject_id
-        self.session_dir = session_dir
-        self.session_tile.set_value(f"{subject_id}")
-        self.record_buffer.clear()
+        self.session_tile.set_value(subject_id)
 
     # --- UI ----------------------------------------------------------------
 
@@ -608,7 +435,7 @@ class MonitorScreen(QWidget):
         config_label.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 11pt; background: transparent;")
         config_row.addWidget(config_label)
         self.config_combo = QComboBox()
-        self.config_combo.addItems([CONFIG_SIDE_BY_SIDE, CONFIG_FRONT_BACK])
+        self.config_combo.addItems(list(LAYOUT_OPTIONS.keys()))
         self.config_combo.setFixedWidth(260)
         self.config_combo.setStyleSheet(self._combo_style())
         self.config_combo.currentTextChanged.connect(self.on_config_changed)
@@ -672,10 +499,6 @@ class MonitorScreen(QWidget):
         self.tare_button.clicked.connect(self.send_tare)
         right.addWidget(self.tare_button)
 
-        self.save_button = _make_button("Save CSV")
-        self.save_button.clicked.connect(self.save_csv)
-        right.addWidget(self.save_button)
-
         self.record_button = _make_button("Record", primary=True)
         self.record_button.clicked.connect(self.toggle_recording)
         right.addWidget(self.record_button)
@@ -690,7 +513,6 @@ class MonitorScreen(QWidget):
         record_status_row.addStretch(1)
         right.addLayout(record_status_row)
 
-        # Bar chart now lives in the control panel, per request.
         self.balance_bar = FootBalanceBar()
         right.addWidget(self.balance_bar)
 
@@ -713,10 +535,13 @@ class MonitorScreen(QWidget):
     # --- Config / layout -----------------------------------------------------
 
     def on_config_changed(self, config_text: str):
-        self.combined_canvas.set_config(config_text)
-        label1, label2 = board_labels(config_text)
+        layout_key = LAYOUT_OPTIONS[config_text]
+        self.combined_canvas.set_layout_key(layout_key)
+        if self.board is not None:
+            self.board.layout = layout_key
+        label1, label2 = board_labels(layout_key)
         if self.latest_sample is not None:
-            self.update_sample(self.latest_sample)
+            self._update_display(self.latest_sample, label1, label2)
         else:
             self.balance_bar.set_values(0.0, 0.0, label1, label2)
 
@@ -729,7 +554,7 @@ class MonitorScreen(QWidget):
     # --- Ports / connection ----------------------------------------------------
 
     def refresh_ports(self):
-        ports = [p.device for p in serial.tools.list_ports.comports()]
+        ports = mobbo.list_ports()
         current = self.port_combo.currentText().strip()
         self.port_combo.clear()
         self.port_combo.addItems(ports)
@@ -743,7 +568,7 @@ class MonitorScreen(QWidget):
             self.port_combo.setCurrentText(DEFAULT_PORT)
 
     def toggle_connection(self):
-        if self.connected or self.reader is not None:
+        if self.board is not None:
             self.disconnect()
             return
         port = self.port_combo.currentText().strip() or DEFAULT_PORT
@@ -751,187 +576,111 @@ class MonitorScreen(QWidget):
             QMessageBox.critical(self, "No port selected", "Choose a COM port first (click Refresh if the list is empty).")
             return
 
-        self.stop_event = multiprocessing.Event()
-        self.command_queue = multiprocessing.Queue()
-        self.reader = multiprocessing.Process(
-            target=serial_worker,
-            args=(port, BAUD_RATE, self.sample_queue, self.command_queue, self.stop_event),
-            daemon=True,
-        )
-        self.reader.start()
-        self.connect_attempt_time = time.monotonic()
+        layout_key = LAYOUT_OPTIONS[self.config_combo.currentText()]
+        board = mobbo.Board(port=port, layout=layout_key)
+        board.on_sample(lambda sample: self.signals.sample_received.emit(sample))
+        board.on_error(lambda exc: self.signals.error_occurred.emit(str(exc)))
+
         self._set_status_display(connected=False, text=f"Opening {port}...")
+        try:
+            board.connect()
+        except mobbo.ConnectionError as exc:
+            self._set_status_display(connected=False, text="Disconnected")
+            QMessageBox.critical(self, "Connection failed", str(exc))
+            return
+
+        self.board = board
+        self._set_status_display(connected=True, text=port)
         self.connect_button.setText("Disconnect")
         self.port_combo.setEnabled(False)
         self.refresh_button.setEnabled(False)
 
     def disconnect(self):
-        if self.stop_event is not None:
-            self.stop_event.set()
-        if self.reader is not None:
-            self.reader.join(timeout=0.5)
-            if self.reader.is_alive():
-                self.reader.terminate()
-                self.reader.join(timeout=0.5)
-        self.reader = None
-        self.command_queue = None
-        self.connected = False
-        self.connect_attempt_time = None
+        if self.board is not None:
+            self.board.disconnect()
+            self.board = None
+        self.recording = False
+        self.record_button.setText("Record")
+        self.record_status_label.setText("Stopped")
+        self.record_status_label.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 10pt; font-weight: 600; background: transparent;")
+        self.record_indicator.set_active(False)
         self._set_status_display(connected=False, text="Disconnected")
         self.connect_button.setText("Connect")
         self.port_combo.setEnabled(True)
         self.refresh_button.setEnabled(True)
 
     def send_tare(self):
-        if not self.connected:
+        if self.board is None or self.board.status != "connected":
             QMessageBox.information(self, "Not connected", "Connect to a board before taring.")
             return
-        if self.taring_active:
-            return
-        self.taring_active = True
-        self.tare_buffer = []
         self.tare_button.setText("Taring...")
         self.tare_button.setEnabled(False)
 
-    def _finish_taring(self):
-        channel_sums = [0.0] * 8
-        for forces in self.tare_buffer:
-            for i in range(8):
-                channel_sums[i] += forces[i]
-        n = len(self.tare_buffer)
-        self.tare_offsets = [s / n for s in channel_sums]
-        self.tare_buffer = []
-        self.taring_active = False
+        board = self.board
+
+        def run_tare():
+            board.tare()
+            self.signals.tare_done.emit()
+
+        threading.Thread(target=run_tare, daemon=True).start()
+
+    def _on_tare_done(self):
         self.tare_button.setText("Tare")
         self.tare_button.setEnabled(True)
-        QMessageBox.information(
-            self, "Tare complete",
-            f"Zeroed using the average of {n} samples per channel.",
-        )
+        n = self.board.tare_sample_count if self.board is not None else 0
+        QMessageBox.information(self, "Tare complete", f"Zeroed using the average of {n} samples per channel.")
 
-    def process_queue(self):
-        try:
-            while True:
-                kind, value = self.sample_queue.get_nowait()
-                if kind == "connected":
-                    self.connected = True
-                    self.connect_attempt_time = None
-                    self._set_status_display(connected=True, text=f"{value}")
-                elif kind == "sample":
-                    self.latest_sample = value
-                    self.update_sample(value)
-                elif kind == "error":
-                    self._set_status_display(connected=False, text=f"Error: {value}")
-                    QMessageBox.critical(self, "Serial connection error", value)
-                    self.disconnect()
-                elif kind == "disconnected":
-                    if not self.connected:
-                        self.reader = None
-                        self.connect_button.setText("Connect")
-                        self.port_combo.setEnabled(True)
-                        self.refresh_button.setEnabled(True)
-        except queue.Empty:
-            pass
+    def _on_error(self, message: str):
+        self._set_status_display(connected=False, text=f"Error: {message}")
+        QMessageBox.critical(self, "Serial connection error", message)
+        self.disconnect()
 
-        if self.connect_attempt_time is not None and not self.connected:
-            if time.monotonic() - self.connect_attempt_time > CONNECT_TIMEOUT_S:
-                self.connect_attempt_time = None
-                self._set_status_display(connected=False, text="Timed out")
-                QMessageBox.critical(
-                    self,
-                    "Connection timed out",
-                    f"No response from {self.port_combo.currentText()} within {CONNECT_TIMEOUT_S:.0f}s.\n"
-                    "Check the port is correct and the board is powered on.",
-                )
-                self.disconnect()
-
-        # Timer only runs while actively recording (starts on Record press).
+    def _tick_timer(self):
         if self.recording and self.record_start_time is not None:
             elapsed = time.monotonic() - self.record_start_time
             self.timer_tile.set_value(f"{elapsed:.1f} s")
 
     # --- Data / recording -------------------------------------------------
 
-    def update_sample(self, sample: Sample):
-        if self.taring_active:
-            self.tare_buffer.append(sample.forces)
-            if len(self.tare_buffer) >= TARE_SAMPLE_COUNT:
-                self._finish_taring()
+    def _on_sample(self, sample: mobbo.EnrichedSample):
+        self.latest_sample = sample
+        label1, label2 = board_labels(sample.layout)
+        self._update_display(sample, label1, label2)
 
-        forces = [f - o for f, o in zip(sample.forces, self.tare_offsets)]
-
-        cop1 = compute_board_cop(forces, 0)
-        cop2 = compute_board_cop(forces, 4)
-        config_text = self.config_combo.currentText()
-        offset1, offset2 = board_offsets(config_text)
-        combined = compute_combined_cop(cop1, cop2, offset1, offset2)
-        self.combined_canvas.set_data(cop1, cop2, combined)
-
-        total_weight = cop1.total_force + cop2.total_force
-        if total_weight > WEIGHT_THRESHOLD_KG:
-            pct1 = max(0.0, min(100.0, (cop1.total_force / total_weight) * 100.0))
-            pct2 = 100.0 - pct1
-        else:
-            pct1 = pct2 = 0.0
-        label1, label2 = board_labels(config_text)
-        self.balance_bar.set_values(pct1, pct2, label1, label2)
+    def _update_display(self, sample: mobbo.EnrichedSample, label1: str, label2: str):
+        self.combined_canvas.set_data(sample.cop1, sample.cop2, sample.combined)
+        self.balance_bar.set_values(sample.pct_board1, sample.pct_board2, label1, label2)
         self.pulse_tile.set_value(str(sample.pulse))
 
-        if self.recording:
-            self.record_buffer.append({
-                "time_ms": sample.time_ms,
-                "F1": forces[0], "F2": forces[1],
-                "F3": forces[2], "F4": forces[3],
-                "F5": forces[4], "F6": forces[5],
-                "F7": forces[6], "F8": forces[7],
-                "pulse": sample.pulse,
-                "config": config_text,
-                "combined_cop_x": combined.cop_x,
-                "combined_cop_y": combined.cop_y,
-                "combined_weight": combined.total_force,
-                "combined_valid": combined.valid,
-                "pct_board1": pct1,
-                "pct_board2": pct2,
-            })
-
     def toggle_recording(self):
-        self.recording = not self.recording
-        if self.recording:
+        if self.board is None or self.board.status != "connected":
+            QMessageBox.information(self, "Not connected", "Connect to a board before recording.")
+            return
+
+        if not self.recording:
+            try:
+                self.board.start_recording(self.subject_id or "subject")
+            except (mobbo.RecordingError, OSError) as exc:
+                QMessageBox.critical(self, "Could not start recording", str(exc))
+                return
+            self.recording = True
             self.record_start_time = time.monotonic()
             self.timer_tile.set_value("0.0 s")
             self.record_button.setText("Stop")
             self.record_status_label.setText("Recording")
             self.record_status_label.setStyleSheet(f"color: {COLOR_RED}; font-size: 10pt; font-weight: 600; background: transparent;")
         else:
+            try:
+                csv_path = self.board.stop_recording()
+            except mobbo.RecordingError as exc:
+                QMessageBox.critical(self, "Could not stop recording", str(exc))
+                return
+            self.recording = False
             self.record_button.setText("Record")
             self.record_status_label.setText("Stopped")
             self.record_status_label.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 10pt; font-weight: 600; background: transparent;")
+            QMessageBox.information(self, "Saved", f"Saved to:\n{csv_path}")
         self.record_indicator.set_active(self.recording)
-
-    def save_csv(self):
-        if not self.record_buffer:
-            QMessageBox.information(self, "Nothing to save", "No samples recorded yet.")
-            return
-        if not self.session_dir:
-            QMessageBox.warning(self, "No session", "No session folder is set - please log in again.")
-            return
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{self.subject_id or 'subject'}_{timestamp}.csv"
-        filepath = os.path.join(self.session_dir, filename)
-
-        fieldnames = list(self.record_buffer[0].keys())
-        try:
-            with open(filepath, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(self.record_buffer)
-        except OSError as exc:
-            QMessageBox.critical(self, "Save failed", f"Could not write CSV: {exc}")
-            return
-
-        QMessageBox.information(self, "Saved", f"Saved {len(self.record_buffer)} samples to:\n{filepath}")
-        self.record_buffer.clear()
 
     def closeEvent(self, event):
         self.disconnect()
@@ -956,8 +705,8 @@ class MainWindow(QMainWindow):
 
         self.login_screen.session_started.connect(self.on_session_started)
 
-    def on_session_started(self, subject_id: str, session_dir: str):
-        self.monitor_screen.set_session(subject_id, session_dir)
+    def on_session_started(self, subject_id: str):
+        self.monitor_screen.set_session(subject_id)
         self.stack.setCurrentWidget(self.monitor_screen)
 
     def closeEvent(self, event):
@@ -966,7 +715,6 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    multiprocessing.freeze_support()  # required for multiprocessing in a frozen Windows .exe
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
