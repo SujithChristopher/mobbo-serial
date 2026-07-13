@@ -49,6 +49,9 @@ def test_start_recording_creates_session_dir_and_stop_recording_writes_rows(monk
         assert len(rows) >= 1
         assert rows[0]["pulse"] == "7"
         assert rows[0]["F1"] == "1.0"
+        assert rows[0]["board1_weight"] == "4.0"
+        assert rows[0]["board1_valid"] == "True"
+        assert rows[0]["board2_valid"] == "False"
     finally:
         b.disconnect()
 
