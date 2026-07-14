@@ -85,7 +85,7 @@ class CombinedBoardCanvas(QWidget):
     """Both boards drawn to a FIXED real-world scale (same physical size in
     both layouts), centered within the canvas. Shows W1/W2/Total weight as
     text at the top, each board's own COP as a small marker, and the
-    combined COP as a larger blue marker (only above the weight threshold).
+    combined COP as a blue marker (only above the weight threshold).
     """
 
     def __init__(self, parent=None):
@@ -199,12 +199,12 @@ class CombinedBoardCanvas(QWidget):
         if self.combined.valid:
             px, py = to_px(self.combined.cop_x, self.combined.cop_y)
             color = QColor(COLOR_GCOP)
-            painter.setPen(QPen(color, 4))
-            painter.drawLine(int(px - 18), int(py), int(px + 18), int(py))
-            painter.drawLine(int(px), int(py - 18), int(px), int(py + 18))
+            painter.setPen(QPen(color, 3))
+            painter.drawLine(int(px - 12), int(py), int(px + 12), int(py))
+            painter.drawLine(int(px), int(py - 12), int(px), int(py + 12))
             painter.setPen(QPen(QColor("#0f172a"), 2))
             painter.setBrush(QBrush(color))
-            painter.drawEllipse(QRectF(px - 9, py - 9, 18, 18))
+            painter.drawEllipse(QRectF(px - 6, py - 6, 12, 12))
         painter.end()
 
 
@@ -512,6 +512,15 @@ class MonitorScreen(QWidget):
         status_row.addWidget(self.timer_tile)
         status_row.addWidget(self.pulse_tile)
         right.addLayout(status_row)
+
+        self.b1_cop_tile = StatTile("B1 COP x, y")
+        self.b2_cop_tile = StatTile("B2 COP x, y")
+        self.combined_cop_tile = StatTile("Combined COP x, y")
+        for tile in (self.b1_cop_tile, self.b2_cop_tile, self.combined_cop_tile):
+            tile.value_label.setMinimumWidth(220)
+            tile.set_value("x --, y --")
+            right.addWidget(tile)
+
         self._set_status_display(connected=False, text="Disconnected")
 
         self.tare_button = _make_button("Tare")
@@ -676,8 +685,16 @@ class MonitorScreen(QWidget):
         self.latest_sample = sample
         self._pending_sample = sample
 
+    def _format_cop(self, cop: mobbo.BoardCop) -> str:
+        if not cop.valid:
+            return "x --, y --"
+        return f"x {cop.cop_x:.2f}, y {cop.cop_y:.2f}"
+
     def _update_display(self, sample: mobbo.EnrichedSample, label1: str, label2: str):
         self.combined_canvas.set_data(sample.cop1, sample.cop2, sample.combined)
+        self.b1_cop_tile.set_value(self._format_cop(sample.cop1))
+        self.b2_cop_tile.set_value(self._format_cop(sample.cop2))
+        self.combined_cop_tile.set_value(self._format_cop(sample.combined))
         self.balance_bar.set_values(sample.pct_board1, sample.pct_board2, label1, label2)
         self.pulse_tile.set_value(str(sample.pulse))
 

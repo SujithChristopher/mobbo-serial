@@ -6,6 +6,7 @@ from mobbo.cop import (
     board_labels,
     board_offsets,
     compute_board_cop,
+    compute_board_cop_with_correction,
     compute_combined_cop,
 )
 
@@ -40,6 +41,15 @@ def test_compute_board_cop_uses_start_index_for_second_board():
     result = compute_board_cop(forces, 4)
     assert result.total_force == 4.0
     assert result.valid is True
+
+
+def test_compute_board_cop_with_correction_subtracts_slope_and_adds_offset():
+    forces = [2.0, 0.0, 0.0, 0.0]
+    result = compute_board_cop_with_correction(forces, 0, "board_1")
+    assert result.valid is True
+    assert result.total_force == 2.0
+    assert result.cop_x == pytest.approx(28.75 - (28.75 * 0.05722694168934991) + -0.10578463619500285)
+    assert result.cop_y == pytest.approx(21.25 - (21.25 * 0.08899981213628787) + -0.2805844185583479)
 
 
 def test_board_offsets_side_by_side():

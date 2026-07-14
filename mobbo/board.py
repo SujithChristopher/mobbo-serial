@@ -7,7 +7,12 @@ import serial
 import serial.tools.list_ports
 
 from . import constants, protocol, storage
-from .cop import BoardCop, board_offsets, compute_board_cop, compute_combined_cop
+from .cop import (
+    BoardCop,
+    board_offsets,
+    compute_board_cop_with_correction,
+    compute_combined_cop,
+)
 from .exceptions import ConnectionError as MobboConnectionError, RecordingError
 
 
@@ -183,8 +188,8 @@ class Board:
 
         forces = [f - o for f, o in zip(sample.forces, self._tare_offsets)]
 
-        cop1 = compute_board_cop(forces, 0)
-        cop2 = compute_board_cop(forces, 4)
+        cop1 = compute_board_cop_with_correction(forces, 0, "cop1")
+        cop2 = compute_board_cop_with_correction(forces, 4, "cop2")
         offset1, offset2 = board_offsets(self.layout)
         combined = compute_combined_cop(cop1, cop2, offset1, offset2)
 
