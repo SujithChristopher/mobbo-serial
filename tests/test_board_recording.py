@@ -21,12 +21,12 @@ def _wait_until(predicate, timeout=2.0):
 @pytest.fixture(autouse=True)
 def _isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "_home_dir", lambda: tmp_path)
-    (tmp_path / "Documents").mkdir()
+    (tmp_path / "Desktop").mkdir()
     yield tmp_path
 
 
 def test_start_recording_creates_session_dir_and_stop_recording_writes_rows(monkeypatch):
-    packet = build_packet((1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 7.0))
+    packet = build_packet((1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0))
     fake = FakeSerial(packet * 3)
     monkeypatch.setattr(board_module.serial, "Serial", lambda *a, **k: fake)
 
@@ -47,11 +47,14 @@ def test_start_recording_creates_session_dir_and_stop_recording_writes_rows(monk
         with open(csv_path, newline="") as f:
             rows = list(csv.DictReader(f))
         assert len(rows) >= 1
-        assert rows[0]["pulse"] == "7"
+        assert rows[0]["time(micros)"] == "1.0"
         assert rows[0]["f1"] == "1.0"
         assert rows[0]["board1_weight"] == "4.0"
-        assert rows[0]["board1_valid"] == "True"
-        assert rows[0]["board2_valid"] == "False"
+        assert "board1_valid" not in rows[0]
+        assert "board2_valid" not in rows[0]
+        assert "combined_valid" not in rows[0]
+        assert "pct_board1" not in rows[0]
+        assert "pct_board2" not in rows[0]
     finally:
         b.disconnect()
 

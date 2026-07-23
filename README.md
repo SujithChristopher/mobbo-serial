@@ -43,6 +43,10 @@ board.disconnect()
 
 `mobbo.list_ports()` lists available COM ports.
 
+## Documentation
+
+See [docs/USAGE.md](docs/USAGE.md) for detailed library usage, callbacks, tare, recording, CSV output, layouts, and error handling.
+
 ## Development
 
 ```bash

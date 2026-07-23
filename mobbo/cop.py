@@ -17,8 +17,8 @@ class BoardCop:
 def compute_board_cop(forces: list[float], start_index: int) -> BoardCop:
     f1, f2, f3, f4 = forces[start_index:start_index + 4]
     total = f1 + f2 + f3 + f4
-    if abs(total) < 1e-6:
-        return BoardCop(0.0, 0.0, total, False)
+    if total <= constants.INDIVIDUAL_COP_WEIGHT_THRESHOLD_KG:
+        return BoardCop(0.0, 0.0, total, True)
 
     cop_x = (((f1 + f4) - (f2 + f3)) / total) * (constants.BOARD_WIDTH_CM / 2.0)
     cop_y = (((f1 + f2) - (f3 + f4)) / total) * (constants.BOARD_LENGTH_CM / 2.0)
@@ -81,7 +81,7 @@ def compute_board_cop_with_correction(
     board_name: str | int | None,
 ) -> BoardCop:
     base_cop = compute_board_cop(forces, start_index)
-    if not base_cop.valid:
+    if not base_cop.valid or base_cop.total_force <= constants.INDIVIDUAL_COP_WEIGHT_THRESHOLD_KG:
         return base_cop
 
     board_key = _normalize_board_name(board_name)
@@ -117,13 +117,19 @@ def compute_combined_cop(
     offset2: tuple[float, float],
 ) -> BoardCop:
     total_weight = cop1.total_force + cop2.total_force
-    if total_weight <= constants.WEIGHT_THRESHOLD_KG:
-        return BoardCop(0.0, 0.0, total_weight, False)
-
     gx1 = offset1[0] + cop1.cop_x
     gy1 = offset1[1] + cop1.cop_y
     gx2 = offset2[0] + cop2.cop_x
     gy2 = offset2[1] + cop2.cop_y
+
+    if (
+        cop1.total_force <= constants.INDIVIDUAL_COP_WEIGHT_THRESHOLD_KG
+        and cop2.total_force <= constants.INDIVIDUAL_COP_WEIGHT_THRESHOLD_KG
+    ):
+        return BoardCop((gx1 + gx2) / 2.0, (gy1 + gy2) / 2.0, total_weight, True)
+
+    if total_weight <= constants.WEIGHT_THRESHOLD_KG:
+        return BoardCop(0.0, 0.0, total_weight, False)
     cop_x = (cop1.total_force * gx1 + cop2.total_force * gx2) / total_weight
     cop_y = (cop1.total_force * gy1 + cop2.total_force * gy2) / total_weight
     return BoardCop(cop_x, cop_y, total_weight, True)

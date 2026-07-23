@@ -4,13 +4,14 @@ from mobbo import constants, exceptions
 def test_protocol_constants_match_device_spec():
     assert constants.BAUD_RATE == 921600
     assert constants.HEADER_BYTES == (0xFF, 0xFF)
-    assert constants.PAYLOAD_FLOATS == 10
-    assert constants.PAYLOAD_SIZE == 40
+    assert constants.PAYLOAD_FLOATS == 9
+    assert constants.PAYLOAD_SIZE == 36
 
 
 def test_physical_constants():
     assert constants.BOARD_WIDTH_CM == 57.5
     assert constants.BOARD_LENGTH_CM == 42.5
+    assert constants.INDIVIDUAL_COP_WEIGHT_THRESHOLD_KG == 1.0
     assert constants.WEIGHT_THRESHOLD_KG == 2.0
     assert constants.TARE_SAMPLE_COUNT == 100
 

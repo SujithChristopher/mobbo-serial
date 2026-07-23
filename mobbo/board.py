@@ -20,7 +20,6 @@ from .exceptions import ConnectionError as MobboConnectionError, RecordingError
 class EnrichedSample:
     time_ms: float
     forces: list[float]
-    pulse: int
     cop1: BoardCop
     cop2: BoardCop
     combined: BoardCop
@@ -203,7 +202,6 @@ class Board:
         enriched = EnrichedSample(
             time_ms=sample.time_ms,
             forces=forces,
-            pulse=sample.pulse,
             cop1=cop1,
             cop2=cop2,
             combined=combined,
@@ -224,24 +222,18 @@ class Board:
     def _write_record_row(self, enriched: EnrichedSample) -> None:
         forces = enriched.forces
         self._record_writer.writerow({
-            "time_ms": enriched.time_ms,
+            "time(micros)": enriched.time_ms,
             "f1": forces[0], "f2": forces[1], "f3": forces[2], "f4": forces[3],
             "f5": forces[4], "f6": forces[5], "f7": forces[6], "f8": forces[7],
-            "pulse": enriched.pulse,
             "layout": enriched.layout,
             "board1_cop_x": enriched.cop1.cop_x,
             "board1_cop_y": enriched.cop1.cop_y,
             "board1_weight": enriched.cop1.total_force,
-            "board1_valid": enriched.cop1.valid,
             "board2_cop_x": enriched.cop2.cop_x,
             "board2_cop_y": enriched.cop2.cop_y,
             "board2_weight": enriched.cop2.total_force,
-            "board2_valid": enriched.cop2.valid,
             "combined_cop_x": enriched.combined.cop_x,
             "combined_cop_y": enriched.combined.cop_y,
             "combined_weight": enriched.combined.total_force,
-            "combined_valid": enriched.combined.valid,
-            "pct_board1": enriched.pct_board1,
-            "pct_board2": enriched.pct_board2,
         })
         self._record_file.flush()

@@ -13,12 +13,12 @@ def test_sanitize_subject_id_falls_back_when_empty():
 
 def test_create_session_dir_uses_configured_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "_home_dir", lambda: tmp_path)
-    (tmp_path / "Documents").mkdir()
+    (tmp_path / "Desktop").mkdir()
 
     session_dir = storage.create_session_dir("subject1")
 
     assert session_dir.exists()
-    assert session_dir.parent == tmp_path / "Documents" / "mobbo-data"
+    assert session_dir.parent == tmp_path / "Desktop" / "mobo_Data"
     assert session_dir.name.startswith("subject1_")
 
 

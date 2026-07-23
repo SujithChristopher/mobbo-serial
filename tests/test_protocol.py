@@ -2,7 +2,7 @@ from mobbo import protocol
 from tests.helpers import build_packet
 
 
-SAMPLE_VALUES = (123.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
+SAMPLE_VALUES = (123.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)
 
 
 def test_pop_binary_payload_extracts_valid_packet():
@@ -10,7 +10,7 @@ def test_pop_binary_payload_extracts_valid_packet():
     buffer = bytearray(packet)
     payload = protocol.pop_binary_payload(buffer)
     assert payload is not None
-    assert len(payload) == 40
+    assert len(payload) == 36
     assert len(buffer) == 0
 
 
@@ -35,7 +35,7 @@ def test_pop_binary_payload_rejects_bad_checksum_and_resyncs():
     buffer = bytearray(packet) + bytearray(good_packet)
     payload = protocol.pop_binary_payload(buffer)
     assert payload is not None
-    values = __import__("struct").unpack("<10f", payload)
+    values = __import__("struct").unpack("<9f", payload)
     assert values[0] == 123.0
 
 
@@ -47,7 +47,6 @@ def test_parse_payload_unpacks_floats():
     assert sample is not None
     assert sample.time_ms == 123.0
     assert sample.forces == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
-    assert sample.pulse == 9
 
 
 def test_parse_payload_wrong_length_returns_none():
