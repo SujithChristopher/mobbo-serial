@@ -1,6 +1,6 @@
 [project]
 name = "mobbo-serial"
-version = "0.1.0"
+version = "0.1.1"
 description = "Serial COP (center of pressure) library for two-force-board setups - connect, tare, and record sessions to CSV, no GUI required."
 readme = "README.md"
 requires-python = ">=3.13"
