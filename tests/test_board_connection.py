@@ -32,7 +32,7 @@ def test_connect_failure_raises_mobbo_connection_error(monkeypatch):
 
 
 def test_connect_starts_reader_thread_and_updates_latest(monkeypatch):
-    packet = build_packet((1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 7.0))
+    packet = build_packet((1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0))
     fake = FakeSerial(packet)
     monkeypatch.setattr(board_module.serial, "Serial", lambda *a, **k: fake)
 
@@ -41,7 +41,6 @@ def test_connect_starts_reader_thread_and_updates_latest(monkeypatch):
     try:
         assert _wait_until(lambda: b.latest is not None)
         assert b.status == "connected"
-        assert b.latest.pulse == 7
         assert b.latest.forces == [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
     finally:
         b.disconnect()
@@ -51,7 +50,7 @@ def test_connect_starts_reader_thread_and_updates_latest(monkeypatch):
 
 
 def test_on_sample_callback_fires(monkeypatch):
-    packet = build_packet((1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 7.0))
+    packet = build_packet((1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0))
     fake = FakeSerial(packet)
     monkeypatch.setattr(board_module.serial, "Serial", lambda *a, **k: fake)
 
@@ -61,7 +60,7 @@ def test_on_sample_callback_fires(monkeypatch):
     b.connect()
     try:
         assert _wait_until(lambda: len(received) > 0)
-        assert received[0].pulse == 7
+        assert received[0].forces == [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
     finally:
         b.disconnect()
 

@@ -8,7 +8,6 @@ from . import constants
 class Sample:
     time_ms: float
     forces: list[float]
-    pulse: int
 
 
 def pop_binary_payload(buffer: bytearray) -> bytes | None:
@@ -42,7 +41,7 @@ def parse_payload(payload: bytes) -> Sample | None:
     if len(payload) != constants.PAYLOAD_SIZE:
         return None
     try:
-        values = struct.unpack("<10f", payload)
+        values = struct.unpack("<9f", payload)
     except struct.error:
         return None
-    return Sample(values[0], list(values[1:9]), int(round(values[9])))
+    return Sample(values[0], list(values[1:9]))

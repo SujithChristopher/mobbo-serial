@@ -16,8 +16,8 @@ def _wait_until(predicate, timeout=2.0):
 
 
 def test_tare_zeroes_out_steady_offset(monkeypatch):
-    # forces = [2,2,2,2, 0,0,0,0], pulse=1
-    packet = build_packet((0.0, 2.0, 2.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+    # forces = [2,2,2,2, 0,0,0,0]
+    packet = build_packet((0.0, 2.0, 2.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0))
     fake = FakeSerial(packet)  # one packet, just to get connected + latest populated
     monkeypatch.setattr(board_module.serial, "Serial", lambda *a, **k: fake)
 

@@ -341,29 +341,6 @@ def _make_button(text: str, primary: bool = False) -> QPushButton:
     return button
 
 
-def _show_message(parent, icon: QMessageBox.Icon, title: str, text: str) -> None:
-    box = QMessageBox(parent)
-    box.setIcon(icon)
-    box.setWindowTitle(title)
-    box.setText(text)
-    box.setStandardButtons(QMessageBox.Ok)
-    box.setStyleSheet(
-        f"QMessageBox {{ background-color: {COLOR_PANEL}; color: {COLOR_TITLE}; }}"
-        f"QMessageBox QLabel {{ color: {COLOR_TITLE}; background: transparent; }}"
-        f"QPushButton {{ background-color: #1a1f28; color: {COLOR_TITLE}; font-weight: 600; "
-        f"padding: 7px 18px; border: 1px solid {COLOR_BORDER}; border-radius: 4px; min-width: 72px; }}"
-        f"QPushButton:hover {{ background-color: #232a36; }}"
-    )
-    box.exec()
-
-
-def _show_info(parent, title: str, text: str) -> None:
-    _show_message(parent, QMessageBox.Information, title, text)
-
-
-def _show_error(parent, title: str, text: str) -> None:
-    _show_message(parent, QMessageBox.Critical, title, text)
-
 # ---------------------------------------------------------------------------
 # Login screen
 # ---------------------------------------------------------------------------
@@ -447,8 +424,8 @@ class MonitorScreen(QWidget):
         self._pending_sample: mobbo.EnrichedSample | None = None
         self.recording = False
         self.record_start_time = None
-        self._last_sample_timestamp_us = None
-        self._sample_frequency_khz = None
+        self._last_sample_time_ms = None
+        self._sample_frequency_hz = None
 
         self.build_ui()
 
@@ -531,7 +508,7 @@ class MonitorScreen(QWidget):
         self.status_tile = StatTile("Status")
         self.timer_tile = StatTile("Timer")
         self.timer_tile.set_value("0.0 s")
-        self.frequency_tile = StatTile("Sample kHz")
+        self.frequency_tile = StatTile("Sample Hz")
         self.frequency_tile.set_value("--")
         status_row.addWidget(self.status_tile)
         status_row.addWidget(self.timer_tile)
@@ -625,7 +602,7 @@ class MonitorScreen(QWidget):
             return
         port = self.port_combo.currentText().strip() or DEFAULT_PORT
         if not port:
-            _show_error(self, "No port selected", "Choose a COM port first (click Refresh if the list is empty).")
+            QMessageBox.critical(self, "No port selected", "Choose a COM port first (click Refresh if the list is empty).")
             return
 
         layout_key = LAYOUT_OPTIONS[self.config_combo.currentText()]
@@ -638,7 +615,7 @@ class MonitorScreen(QWidget):
             board.connect()
         except mobbo.ConnectionError as exc:
             self._set_status_display(connected=False, text="Disconnected")
-            _show_error(self, "Connection failed", str(exc))
+            QMessageBox.critical(self, "Connection failed", str(exc))
             return
 
         self.board = board
@@ -656,8 +633,8 @@ class MonitorScreen(QWidget):
         self.record_status_label.setText("Stopped")
         self.record_status_label.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 10pt; font-weight: 600; background: transparent;")
         self.record_indicator.set_active(False)
-        self._last_sample_timestamp_us = None
-        self._sample_frequency_khz = None
+        self._last_sample_time_ms = None
+        self._sample_frequency_hz = None
         if hasattr(self, "frequency_tile"):
             self.frequency_tile.set_value("--")
         self._set_status_display(connected=False, text="Disconnected")
@@ -667,7 +644,7 @@ class MonitorScreen(QWidget):
 
     def send_tare(self):
         if self.board is None or self.board.status != "connected":
-            _show_info(self, "Not connected", "Connect to a board before taring.")
+            QMessageBox.information(self, "Not connected", "Connect to a board before taring.")
             return
         self.tare_button.setText("Taring...")
         self.tare_button.setEnabled(False)
@@ -684,11 +661,11 @@ class MonitorScreen(QWidget):
         self.tare_button.setText("Tare")
         self.tare_button.setEnabled(True)
         n = self.board.tare_sample_count if self.board is not None else 0
-        _show_info(self, "Tare complete", f"Zeroed using the average of {n} samples per channel.")
+        QMessageBox.information(self, "Tare complete", f"Zeroed using the average of {n} samples per channel.")
 
     def _on_error(self, message: str):
         self._set_status_display(connected=False, text=f"Error: {message}")
-        _show_error(self, "Serial connection error", message)
+        QMessageBox.critical(self, "Serial connection error", message)
         self.disconnect()
 
     def _tick_timer(self):
@@ -711,7 +688,6 @@ class MonitorScreen(QWidget):
     # --- Data / recording -------------------------------------------------
 
     def _on_sample(self, sample: mobbo.EnrichedSample):
-        self._update_frequency(sample.time_ms)
         self.latest_sample = sample
         self._pending_sample = sample
 
@@ -726,29 +702,30 @@ class MonitorScreen(QWidget):
         self.b2_cop_tile.set_value(self._format_cop(sample.cop2))
         self.combined_cop_tile.set_value(self._format_cop(sample.combined))
         self.balance_bar.set_values(sample.pct_board1, sample.pct_board2, label1, label2)
+        self._update_frequency(sample.time_ms)
 
-    def _update_frequency(self, timestamp_us: float):
-        if self._last_sample_timestamp_us is not None:
-            dt_us = timestamp_us - self._last_sample_timestamp_us
-            if dt_us > 0:
-                khz = 1000.0 / dt_us
-                if self._sample_frequency_khz is None:
-                    self._sample_frequency_khz = khz
+    def _update_frequency(self, time_ms: float):
+        if self._last_sample_time_ms is not None:
+            dt_ms = time_ms - self._last_sample_time_ms
+            if dt_ms > 0:
+                hz = 1000.0 / dt_ms
+                if self._sample_frequency_hz is None:
+                    self._sample_frequency_hz = hz
                 else:
-                    self._sample_frequency_khz = (self._sample_frequency_khz * 0.85) + (khz * 0.15)
-                self.frequency_tile.set_value(f"{self._sample_frequency_khz:.2f}")
-        self._last_sample_timestamp_us = timestamp_us
+                    self._sample_frequency_hz = (self._sample_frequency_hz * 0.85) + (hz * 0.15)
+                self.frequency_tile.set_value(f"{self._sample_frequency_hz:.1f}")
+        self._last_sample_time_ms = time_ms
 
     def toggle_recording(self):
         if self.board is None or self.board.status != "connected":
-            _show_info(self, "Not connected", "Connect to a board before recording.")
+            QMessageBox.information(self, "Not connected", "Connect to a board before recording.")
             return
 
         if not self.recording:
             try:
                 self.board.start_recording(self.subject_id or "subject")
             except (mobbo.RecordingError, OSError) as exc:
-                _show_error(self, "Could not start recording", str(exc))
+                QMessageBox.critical(self, "Could not start recording", str(exc))
                 return
             self.recording = True
             self.record_start_time = time.monotonic()
@@ -760,13 +737,13 @@ class MonitorScreen(QWidget):
             try:
                 csv_path = self.board.stop_recording()
             except mobbo.RecordingError as exc:
-                _show_error(self, "Could not stop recording", str(exc))
+                QMessageBox.critical(self, "Could not stop recording", str(exc))
                 return
             self.recording = False
             self.record_button.setText("Record")
             self.record_status_label.setText("Stopped")
             self.record_status_label.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 10pt; font-weight: 600; background: transparent;")
-            _show_info(self, "Saved", f"Saved to:\n{csv_path}")
+            QMessageBox.information(self, "Saved", f"Saved to:\n{csv_path}")
         self.record_indicator.set_active(self.recording)
 
     def closeEvent(self, event):
